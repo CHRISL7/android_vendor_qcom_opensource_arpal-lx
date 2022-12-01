@@ -250,7 +250,6 @@ int32_t  StreamCommon::close()
     }
     PAL_VERBOSE(LOG_TAG, "closed the devices successfully");
     currentState = STREAM_IDLE;
-
     mStreamMutex.unlock();
 
     PAL_DBG(LOG_TAG, "Exit. closed the stream successfully %d status %d",
@@ -290,17 +289,18 @@ int32_t StreamCommon::start()
         rm->unlockGraph();
         PAL_VERBOSE(LOG_TAG, "session start successful");
 
-        mStreamMutex.unlock();
-        rm->lockActiveStream();
-        mStreamMutex.lock();
-        for (int i = 0; i < mDevices.size(); i++) {
-            rm->registerDevice(mDevices[i], this);
-        }
-        rm->unlockActiveStream();
         /*pcm_open and pcm_start done at once here,
          *so directly jump to STREAM_STARTED state.
          */
         currentState = STREAM_STARTED;
+        mStreamMutex.unlock();
+        rm->lockActiveStream();
+        mStreamMutex.lock();
+        for (int i = 0; i < mDevices.size(); i++) {
+            if (!rm->isDeviceActive_l(mDevices[i], this))
+                rm->registerDevice(mDevices[i], this);
+        }
+        rm->unlockActiveStream();
     } else if (currentState == STREAM_STARTED) {
         PAL_INFO(LOG_TAG, "Stream already started, state %d", currentState);
     } else {
@@ -379,7 +379,8 @@ int32_t StreamCommon::stop()
         mStreamMutex.lock();
         currentState = STREAM_STOPPED;
         for (int i = 0; i < mDevices.size(); i++) {
-            rm->deregisterDevice(mDevices[i], this);
+            if (rm->isDeviceActive_l(mDevices[i], this))
+                rm->deregisterDevice(mDevices[i], this);
         }
         rm->unlockActiveStream();
         PAL_VERBOSE(LOG_TAG, "In %s, device count - %zu",

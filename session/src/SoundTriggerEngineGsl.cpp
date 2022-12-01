@@ -92,7 +92,12 @@ void SoundTriggerEngineGsl::EventProcessingThread(
 
             if (s) {
                 if (gsl_engine->capture_requested_) {
-                    gsl_engine->StartBuffering(s);
+                    status = gsl_engine->StartBuffering(s);
+                    if (status < 0) {
+                        lck.unlock();
+                        gsl_engine->RestartRecognition(s);
+                        lck.lock();
+                    }
                 } else {
                     status = gsl_engine->UpdateSessionPayload(ENGINE_RESET);
                     gsl_engine->CheckAndSetDetectionConfLevels(s);
@@ -115,7 +120,12 @@ void SoundTriggerEngineGsl::EventProcessingThread(
                                  detected_model_id));
                 if (s) {
                     if (gsl_engine->capture_requested_) {
-                        gsl_engine->StartBuffering(s);
+                        status = gsl_engine->StartBuffering(s);
+                        if (status < 0) {
+                            lck.unlock();
+                            gsl_engine->RestartRecognition(s);
+                            lck.lock();
+                        }
                     } else {
                         status = gsl_engine->UpdateSessionPayload(ENGINE_RESET);
                         lck.unlock();
@@ -275,11 +285,21 @@ int32_t SoundTriggerEngineGsl::StartBuffering(Stream *s) {
             if (!status) {
                 bytes_written = FrameToBytes(mmap_pos.position_frames -
                     mmap_write_position_);
+                if (bytes_written == UINT32_MAX) {
+                    PAL_ERR(LOG_TAG, "invalid frame value");
+                    status = -EINVAL;
+                    goto exit;
+                }
                 if (bytes_written > total_read_size) {
                     size_to_read = bytes_written - total_read_size;
                 } else {
                     // TODO: add timeout check & handling
                     continue;
+                }
+                if (size_to_read > (2 * mmap_buffer_size_) - read_offset) {
+                    PAL_ERR(LOG_TAG, "Bytes written is exceeding mmap buffer size");
+                    status = -EINVAL;
+                    goto exit;
                 }
                 PAL_VERBOSE(LOG_TAG, "Mmap write offset %zu, available bytes %zu",
                     bytes_written, size_to_read);
@@ -827,6 +847,7 @@ SoundTriggerEngineGsl::SoundTriggerEngineGsl(
     sm_data_ = nullptr;
     reader_ = nullptr;
     buffer_ = nullptr;
+    rx_ec_dev_ = nullptr;
     is_qcva_uuid_ = false;
     is_qcmd_uuid_ = false;
     custom_data = nullptr;
@@ -841,6 +862,7 @@ SoundTriggerEngineGsl::SoundTriggerEngineGsl(
     dev_disconnect_count_ = 0;
     lpi_miid_ = 0;
     nlpi_miid_ = 0;
+    ec_ref_count_ = 0;
 
     UpdateState(ENG_IDLE);
 
@@ -1830,6 +1852,8 @@ exit:
 
 int32_t SoundTriggerEngineGsl::UnloadSoundModel(Stream *s) {
     int32_t status = 0;
+    uint32_t model_id = 0;
+    StreamSoundTrigger *st = dynamic_cast<StreamSoundTrigger *>(s);
 
     PAL_DBG(LOG_TAG, "Enter");
 
@@ -1859,6 +1883,13 @@ exit:
         PAL_INFO(LOG_TAG, "Update the status in case of SSR");
         status = 0;
     }
+
+    model_id = st->GetModelId();
+    auto iter = std::find(updated_cfg_.begin(), updated_cfg_.end(), model_id);
+    if (iter != updated_cfg_.end()) {
+        updated_cfg_.erase(iter);
+    }
+
     PAL_DBG(LOG_TAG, "Exit, status = %d", status);
     return status;
 }
@@ -1900,7 +1931,8 @@ int32_t SoundTriggerEngineGsl::ProcessStartRecognition(Stream *s) {
     struct pal_mmap_position mmap_pos;
 
     PAL_DBG(LOG_TAG, "Enter");
-
+    std::shared_ptr<ResourceManager> rm = ResourceManager::getInstance();
+    rm->acquireWakeLock();
     // release custom detection event before start
     if (custom_detection_event) {
         free(custom_detection_event);
@@ -1968,6 +2000,7 @@ int32_t SoundTriggerEngineGsl::ProcessStartRecognition(Stream *s) {
     exit_buffering_ = false;
     UpdateState(ENG_ACTIVE);
 exit:
+    rm->releaseWakeLock();
     PAL_DBG(LOG_TAG, "Exit, status %d", status);
     return status;
 }
@@ -2113,6 +2146,8 @@ int32_t SoundTriggerEngineGsl::ProcessStopRecognition(Stream *s) {
     int32_t status = 0;
 
     PAL_DBG(LOG_TAG, "Enter");
+    std::shared_ptr<ResourceManager> rm = ResourceManager::getInstance();
+    rm->acquireWakeLock();
     if (buffer_) {
         buffer_->reset();
     }
@@ -2133,6 +2168,7 @@ int32_t SoundTriggerEngineGsl::ProcessStopRecognition(Stream *s) {
         PAL_ERR(LOG_TAG, "Failed to stop session, status = %d", status);
     }
     UpdateState(ENG_LOADED);
+    rm->releaseWakeLock();
     PAL_DBG(LOG_TAG, "Exit, status = %d", status);
     return status;
 }
@@ -2156,7 +2192,7 @@ int32_t SoundTriggerEngineGsl::StopRecognition(Stream *s) {
             goto exit;
         }
 
-        if (CheckIfOtherStreamsAttached(s)) {
+        if (CheckIfOtherStreamsActive(s)) {
             PAL_INFO(LOG_TAG, "Other streams are attached to current engine");
             if (restore_eng_state) {
                 PAL_DBG(LOG_TAG, "Other streams are active, restart recognition");
@@ -2209,7 +2245,10 @@ bool SoundTriggerEngineGsl::CheckIfOtherStreamsActive(Stream *s) {
 
     for (uint32_t i = 0; i < eng_streams_.size(); i++) {
         st = dynamic_cast<StreamSoundTrigger *>(eng_streams_[i]);
-        if (s != eng_streams_[i] && st && st->GetCurrentStateId() == ST_STATE_ACTIVE)
+        if (s != eng_streams_[i] && st &&
+            (st->GetCurrentStateId() == ST_STATE_ACTIVE ||
+             st->GetCurrentStateId() == ST_STATE_BUFFERING ||
+             st->GetCurrentStateId() == ST_STATE_DETECTED))
             return true;
     }
 
@@ -2694,13 +2733,63 @@ void* SoundTriggerEngineGsl::GetDetectionEventInfo() {
     return &detection_event_info_;
 }
 
-int32_t SoundTriggerEngineGsl::setECRef(Stream *s, std::shared_ptr<Device> dev, bool is_enable) {
+int32_t SoundTriggerEngineGsl::setECRef(Stream *s, std::shared_ptr<Device> dev, bool is_enable,
+                                        bool setECForFirstTime) {
+
+    int32_t status = 0;
+    bool force_enable = false;
+
     if (!session_) {
         PAL_ERR(LOG_TAG, "Invalid session");
         return -EINVAL;
     }
+    PAL_DBG(LOG_TAG, "Enter, EC ref count : %d, enable : %d", ec_ref_count_, is_enable);
+    PAL_DBG(LOG_TAG, "Rx device : %s, stream is setting EC for first time : %d",
+            dev ? dev->getPALDeviceName().c_str() :  "Null", setECForFirstTime);
+    std::unique_lock<std::mutex> lck(ec_ref_mutex_);
+    if (is_enable) {
+        if (setECForFirstTime) {
+            ec_ref_count_++;
+        } else if (rx_ec_dev_!=dev) {
+            force_enable = true;
+        } else {
+            return status;
+        }
+        rx_ec_dev_ = dev;
+        if (force_enable || ec_ref_count_ == 1) {
+            status = session_->setECRef(s, dev, is_enable);
+            if (status) {
+                PAL_ERR(LOG_TAG, "Failed to set EC Ref for rx device %s",
+                        dev ? dev->getPALDeviceName().c_str() : "Null");
+                if (setECForFirstTime) {
+                    ec_ref_count_--;
+                }
+                if (force_enable || ec_ref_count_ == 0) {
+                    rx_ec_dev_ = nullptr;
+                }
+            }
+        }
+    } else {
+        if (!dev || dev == rx_ec_dev_) {
+            if (ec_ref_count_ > 0) {
+                ec_ref_count_--;
+                if (ec_ref_count_ == 0) {
+                    rx_ec_dev_ = nullptr;
+                    status = session_->setECRef(s, dev, is_enable);
+                    if (status) {
+                        PAL_ERR(LOG_TAG, "Failed to reset EC Ref");
+                    }
+                }
+            } else {
+                PAL_DBG(LOG_TAG, "Skipping EC disable, as ref count is 0");
+            }
+        } else {
+            PAL_DBG(LOG_TAG, "Skipping EC disable, as EC disable is not for correct device");
+        }
+    }
+    PAL_DBG(LOG_TAG, "Exit, EC ref count : %d", ec_ref_count_);
 
-    return session_->setECRef(s, dev, is_enable);
+    return status;
 }
 
 int32_t SoundTriggerEngineGsl::GetCustomDetectionEvent(uint8_t **event,
@@ -2884,6 +2973,10 @@ int32_t SoundTriggerEngineGsl::UpdateSessionPayload(st_param_id_type_t param) {
     }
 
     return status;
+}
+
+void SoundTriggerEngineGsl::UpdateStateToActive() {
+    UpdateState(ENG_ACTIVE);
 }
 
 std::shared_ptr<SoundTriggerEngineGsl> SoundTriggerEngineGsl::GetInstance(

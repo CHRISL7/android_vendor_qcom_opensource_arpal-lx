@@ -351,7 +351,7 @@
             <id>PAL_DEVICE_IN_PROXY</id>
             <back_end_name>PCM_RT_PROXY-TX-1</back_end_name>
             <max_channels>2</max_channels>
-            <channels>1</channels>
+            <channels>2</channels>
             <snd_device_name>afe-proxy</snd_device_name>
             <usecase>
                 <name>PAL_STREAM_PROXY</name>
@@ -945,6 +945,7 @@
             <param mmap_buffer_duration="5000" />
             <param mmap_frame_length="5" /> <!-- 5ms duration of data -->
             <param notify_second_stage_failure="false"/>
+            <param support_defer_lpi_switch="false"/>
         </common_config>
         <capture_profile_list>
             <capture_profile name="SINGLE_MIC_16KHZ_16BIT_HEADSET_FFNS">

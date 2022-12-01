@@ -448,7 +448,8 @@ private:
     int updateECDeviceMap(std::shared_ptr<Device> rx_dev,
                         std::shared_ptr<Device> tx_dev,
                         Stream *tx_str, int count, bool is_txstop);
-    int clearInternalECRefCounts(Stream *tx_str, std::shared_ptr<Device> tx_dev);
+    std::shared_ptr<Device> clearInternalECRefCounts(Stream *tx_str,
+                        std::shared_ptr<Device> tx_dev);
     static bool isBitWidthSupported(uint32_t bitWidth);
     uint32_t getNTPathForStreamAttr(const pal_stream_attributes attr);
     ssize_t getAvailableNTStreamInstance(const pal_stream_attributes attr);
@@ -478,8 +479,9 @@ protected:
     std::vector <std::pair<std::shared_ptr<Device>, Stream*>> active_devices;
     std::vector <std::shared_ptr<Device>> plugin_devices_;
     std::vector <pal_device_id_t> avail_devices_;
+    std::map<Stream*, uint32_t> mActiveStreamUserCounter;
     bool bOverwriteFlag;
-    bool screen_state_;
+    bool screen_state_ = true;
     bool charging_state_;
     bool is_charger_online_;
     bool is_concurrent_boost_state_;
@@ -645,7 +647,13 @@ public:
     pal_audio_fmt_t getAudioFmt(uint32_t bitWidth);
     int registerStream(Stream *s);
     int deregisterStream(Stream *s);
-    int isActiveStream(Stream *s);
+    int isActiveStream(pal_stream_handle_t *handle);
+    int initStreamUserCounter(Stream *s);
+    int deinitStreamUserCounter(Stream *s);
+    int increaseStreamUserCounter(Stream* s);
+    int decreaseStreamUserCounter(Stream* s);
+    int getStreamUserCounter(Stream *s);
+    int printStreamUserCounter(Stream *s);
     int registerDevice(std::shared_ptr<Device> d, Stream *s);
     int deregisterDevice(std::shared_ptr<Device> d, Stream *s);
     int registerDevice_l(std::shared_ptr<Device> d, Stream *s);
@@ -782,7 +790,7 @@ public:
     bool isAnyVUIStreamBuffering();
     void handleDeferredSwitch();
     void handleConcurrentStreamSwitch(std::vector<pal_stream_type_t>& st_streams,
-                                      bool stream_active, bool is_deferred);
+                                      bool stream_active);
     std::shared_ptr<Device> getActiveEchoReferenceRxDevices(Stream *tx_str);
     std::shared_ptr<Device> getActiveEchoReferenceRxDevices_l(Stream *tx_str);
     std::vector<Stream*> getConcurrentTxStream(
@@ -891,6 +899,7 @@ public:
                                  struct pal_device *Dev2Attr,
                                  const struct pal_device_info *Dev2Info);
     int32_t voteSleepMonitor(Stream *str, bool vote, bool force_nlpi_vote = false);
+    bool checkAndUpdateDeferSwitchState(bool stream_active);
     static uint32_t palFormatToBitwidthLookup(const pal_audio_fmt_t format);
     void chargerListenerFeatureInit();
     static void chargerListenerInit(charger_status_change_fn_t);

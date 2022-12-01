@@ -124,6 +124,7 @@ StreamSoundTrigger::StreamSoundTrigger(struct pal_stream_attributes *sattr,
     gsl_engine_ = nullptr;
     sm_info_ = nullptr;
     sm_cfg_ = nullptr;
+    ec_rx_dev_ = nullptr;
     mDevices.clear();
     mPalDevice.clear();
 
@@ -643,6 +644,13 @@ int32_t StreamSoundTrigger::setECRef_l(std::shared_ptr<Device> dev, bool is_enab
     status = cur_state_->ProcessEvent(ev_cfg);
     if (status) {
         PAL_ERR(LOG_TAG, "Failed to handle ec ref event");
+        goto exit;
+    }
+
+    if (is_enable) {
+        ec_rx_dev_ = dev;
+    } else {
+        ec_rx_dev_ = nullptr;
     }
 
 exit:
@@ -3555,6 +3563,7 @@ int32_t StreamSoundTrigger::StLoaded::ProcessEvent(
             } else if (st_stream_.isActive() && !st_stream_.paused_) {
                 st_stream_.rm->registerDevice(dev, &st_stream_);
                 TransitTo(ST_STATE_ACTIVE);
+                st_stream_.gsl_engine_->UpdateStateToActive();
             }
         connect_err:
             delete pal_dev;
@@ -3619,7 +3628,7 @@ int32_t StreamSoundTrigger::StLoaded::ProcessEvent(
                 (StECRefEventConfigData *)ev_cfg->data_.get();
             Stream *s = static_cast<Stream *>(&st_stream_);
             status = st_stream_.gsl_engine_->setECRef(s, data->dev_,
-                data->is_enable_);
+                data->is_enable_, st_stream_.ec_rx_dev_ == nullptr);
             if (status) {
                 PAL_ERR(LOG_TAG, "Failed to set EC Ref in gsl engine");
             }
@@ -3704,6 +3713,12 @@ int32_t StreamSoundTrigger::StActive::ProcessEvent(
                 }
             }
 
+            if (st_stream_.mDevices.size() > 0) {
+                auto& dev = st_stream_.mDevices[0];
+                PAL_VERBOSE(LOG_TAG, "Deregister device %d-%s", dev->getSndDeviceId(),
+                    dev->getPALDeviceName().c_str());
+                st_stream_.rm->deregisterDevice(dev, &st_stream_);
+            }
             for (auto& eng: st_stream_.engines_) {
                 PAL_VERBOSE(LOG_TAG, "Stop engine %d", eng->GetEngineId());
                 status = eng->GetEngine()->StopRecognition(&st_stream_);
@@ -3719,8 +3734,6 @@ int32_t StreamSoundTrigger::StActive::ProcessEvent(
                 status = dev->stop();
                 if (status)
                     PAL_ERR(LOG_TAG, "Device stop failed, status %d", status);
-
-                st_stream_.rm->deregisterDevice(dev, &st_stream_);
 
                 PAL_DBG(LOG_TAG, "Close device %d-%s", dev->getSndDeviceId(),
                         dev->getPALDeviceName().c_str());
@@ -3752,7 +3765,7 @@ int32_t StreamSoundTrigger::StActive::ProcessEvent(
                 (StECRefEventConfigData *)ev_cfg->data_.get();
             Stream *s = static_cast<Stream *>(&st_stream_);
             status = st_stream_.gsl_engine_->setECRef(s, data->dev_,
-                data->is_enable_);
+                data->is_enable_, st_stream_.ec_rx_dev_ == nullptr);
             if (status) {
                 PAL_ERR(LOG_TAG, "Failed to set EC Ref in gsl engine");
             }
@@ -3981,6 +3994,13 @@ int32_t StreamSoundTrigger::StDetected::ProcessEvent(
         }
         case ST_EV_UNLOAD_SOUND_MODEL:
         case ST_EV_STOP_RECOGNITION: {
+            if (st_stream_.mDevices.size() > 0) {
+                auto& dev = st_stream_.mDevices[0];
+                PAL_VERBOSE(LOG_TAG, "Deregister device %d-%s", dev->getSndDeviceId(),
+                    dev->getPALDeviceName().c_str());
+                st_stream_.rm->deregisterDevice(dev, &st_stream_);
+            }
+
             st_stream_.CancelDelayedStop();
             for (auto& eng: st_stream_.engines_) {
                 PAL_VERBOSE(LOG_TAG, "Stop engine %d", eng->GetEngineId());
@@ -3997,8 +4017,6 @@ int32_t StreamSoundTrigger::StDetected::ProcessEvent(
                 status = dev->stop();
                 if (status)
                     PAL_ERR(LOG_TAG, "Device stop failed, status %d", status);
-
-                st_stream_.rm->deregisterDevice(dev, &st_stream_);
 
                 status = dev->close();
                 st_stream_.device_opened_ = false;
@@ -4018,6 +4036,12 @@ int32_t StreamSoundTrigger::StDetected::ProcessEvent(
             break;
         }
         case ST_EV_RECOGNITION_CONFIG: {
+            if (st_stream_.mDevices.size() > 0) {
+                auto& dev = st_stream_.mDevices[0];
+                PAL_VERBOSE(LOG_TAG, "Deregister device %d-%s", dev->getSndDeviceId(),
+                    dev->getPALDeviceName().c_str());
+                st_stream_.rm->deregisterDevice(dev, &st_stream_);
+            }
             /*
              * Client can update config for next recognition.
              * Get to loaded state as START event will start recognition.
@@ -4039,8 +4063,6 @@ int32_t StreamSoundTrigger::StDetected::ProcessEvent(
                 status = dev->stop();
                 if (status)
                     PAL_ERR(LOG_TAG, "Device stop failed, status %d", status);
-
-                st_stream_.rm->deregisterDevice(dev, &st_stream_);
 
                 status = dev->close();
                 st_stream_.device_opened_ = false;
@@ -4064,6 +4086,13 @@ int32_t StreamSoundTrigger::StDetected::ProcessEvent(
         case ST_EV_CONCURRENT_STREAM:
         case ST_EV_DEVICE_DISCONNECTED:
         case ST_EV_DEVICE_CONNECTED: {
+            if (st_stream_.mDevices.size() > 0) {
+                auto& dev = st_stream_.mDevices[0];
+                PAL_VERBOSE(LOG_TAG, "Deregister device %d-%s", dev->getSndDeviceId(),
+                    dev->getPALDeviceName().c_str());
+                st_stream_.rm->deregisterDevice(dev, &st_stream_);
+            }
+
             st_stream_.CancelDelayedStop();
             for (auto& eng: st_stream_.engines_) {
                 PAL_VERBOSE(LOG_TAG, "Stop engine %d", eng->GetEngineId());
@@ -4080,8 +4109,6 @@ int32_t StreamSoundTrigger::StDetected::ProcessEvent(
                 status = dev->stop();
                 if (status)
                     PAL_ERR(LOG_TAG, "Device stop failed, status %d", status);
-
-                st_stream_.rm->deregisterDevice(dev, &st_stream_);
 
                 status = dev->close();
                 st_stream_.device_opened_ = false;
@@ -4116,7 +4143,7 @@ int32_t StreamSoundTrigger::StDetected::ProcessEvent(
                 (StECRefEventConfigData *)ev_cfg->data_.get();
             Stream *s = static_cast<Stream *>(&st_stream_);
             status = st_stream_.gsl_engine_->setECRef(s, data->dev_,
-                data->is_enable_);
+                data->is_enable_, st_stream_.ec_rx_dev_ == nullptr);
             if (status) {
                 PAL_ERR(LOG_TAG, "Failed to set EC Ref in gsl engine");
             }
@@ -4189,6 +4216,13 @@ int32_t StreamSoundTrigger::StBuffering::ProcessEvent(
             break;
         }
         case ST_EV_RECOGNITION_CONFIG: {
+            if (st_stream_.mDevices.size() > 0) {
+                auto& dev = st_stream_.mDevices[0];
+                PAL_VERBOSE(LOG_TAG, "Deregister device %d-%s", dev->getSndDeviceId(),
+                    dev->getPALDeviceName().c_str());
+                st_stream_.rm->deregisterDevice(dev, &st_stream_);
+            }
+
             /*
              * Can happen if client doesn't read buffers after sending detection
              * event, but requests next recognition with config change.
@@ -4219,8 +4253,6 @@ int32_t StreamSoundTrigger::StBuffering::ProcessEvent(
                 if (status)
                     PAL_ERR(LOG_TAG, "Device stop failed, status %d", status);
 
-                st_stream_.rm->deregisterDevice(dev, &st_stream_);
-
                 status = dev->close();
                 st_stream_.device_opened_ = false;
                 if (0 != status)
@@ -4244,6 +4276,13 @@ int32_t StreamSoundTrigger::StBuffering::ProcessEvent(
         }
         case ST_EV_UNLOAD_SOUND_MODEL:
         case ST_EV_STOP_RECOGNITION:  {
+            if (st_stream_.mDevices.size() > 0) {
+                auto& dev = st_stream_.mDevices[0];
+                PAL_VERBOSE(LOG_TAG, "Deregister device %d-%s", dev->getSndDeviceId(),
+                    dev->getPALDeviceName().c_str());
+                st_stream_.rm->deregisterDevice(dev, &st_stream_);
+            }
+
             // Possible with deffered stop if client doesn't start next recognition.
             if (st_stream_.force_nlpi_vote) {
                 rm->voteSleepMonitor(&st_stream_, false, true);
@@ -4269,8 +4308,6 @@ int32_t StreamSoundTrigger::StBuffering::ProcessEvent(
                 status = dev->stop();
                 if (status)
                     PAL_ERR(LOG_TAG, "Device stop failed, status %d", status);
-
-                st_stream_.rm->deregisterDevice(dev, &st_stream_);
 
                 status = dev->close();
                 st_stream_.device_opened_ = false;
@@ -4381,6 +4418,13 @@ int32_t StreamSoundTrigger::StBuffering::ProcessEvent(
                 rm->voteSleepMonitor(&st_stream_, false, true);
                 st_stream_.force_nlpi_vote = false;
             }
+            if (st_stream_.mDevices.size() > 0) {
+                auto& dev = st_stream_.mDevices[0];
+                PAL_VERBOSE(LOG_TAG, "Deregister device %d-%s", dev->getSndDeviceId(),
+                    dev->getPALDeviceName().c_str());
+                st_stream_.rm->deregisterDevice(dev, &st_stream_);
+            }
+
             st_stream_.CancelDelayedStop();
 
             for (auto& eng: st_stream_.engines_) {
@@ -4401,8 +4445,6 @@ int32_t StreamSoundTrigger::StBuffering::ProcessEvent(
                 status = dev->stop();
                 if (status)
                     PAL_ERR(LOG_TAG, "Device stop failed, status %d", status);
-
-                st_stream_.rm->deregisterDevice(dev, &st_stream_);
 
                 status = dev->close();
                 st_stream_.device_opened_ = false;
@@ -4442,7 +4484,7 @@ int32_t StreamSoundTrigger::StBuffering::ProcessEvent(
                 (StECRefEventConfigData *)ev_cfg->data_.get();
             Stream *s = static_cast<Stream *>(&st_stream_);
             status = st_stream_.gsl_engine_->setECRef(s, data->dev_,
-                data->is_enable_);
+                data->is_enable_, st_stream_.ec_rx_dev_ == nullptr);
             if (status) {
                 PAL_ERR(LOG_TAG, "Failed to set EC Ref in gsl engine");
             }
@@ -4604,7 +4646,11 @@ int32_t StreamSoundTrigger::StSSR::ProcessEvent(
             break;
         }
         case ST_EV_RESUME: {
-            st_stream_.paused_ = false;
+            if (st_stream_.paused_) {
+                if (st_stream_.currentState == STREAM_STARTED)
+                    st_stream_.state_for_restore_ = ST_STATE_ACTIVE;
+                st_stream_.paused_ = false;
+            }
             break;
         }
         case ST_EV_READ_BUFFER:

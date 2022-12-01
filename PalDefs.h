@@ -663,11 +663,15 @@ struct pal_media_config {
 };
 
 /** Android Media configuraiton  */
+/* dynamic media config for plugin devices, +1 so that the last entry is always 0 */
+#define MAX_SUPPORTED_CHANNEL_MASKS (2 * 8)
+#define MAX_SUPPORTED_FORMATS 15
+#define MAX_SUPPORTED_SAMPLE_RATES 7
 typedef struct dynamic_media_config {
-    uint32_t sample_rate;                /**< sample rate */
-    uint32_t format;                     /**< format */
-    uint32_t mask;                       /**< channel mask */
-    bool jack_status;                    /**< input/output jack status*/
+    uint32_t sample_rate[MAX_SUPPORTED_SAMPLE_RATES+1];   /**< sample rate */
+    uint32_t format[MAX_SUPPORTED_FORMATS+1];             /**< format */
+    uint32_t mask[MAX_SUPPORTED_CHANNEL_MASKS + 1];       /**< channel mask */
+    bool jack_status;                                     /**< input/output jack status*/
 } dynamic_media_config_t;
 
 /**  Available stream flags of an audio session*/
@@ -1400,16 +1404,19 @@ typedef struct pal_buffer_config {
 #define PAL_LOW_LATENCY_PLATFORM_DELAY (13*1000LL)
 #define PAL_MMAP_PLATFORM_DELAY        (3*1000LL)
 #define PAL_ULL_PLATFORM_DELAY         (4*1000LL)
+#define PAL_VOIP_PLATFORM_DELAY        (29*1000LL)
 
 #define PAL_GENERIC_OUTPUT_PERIOD_DURATION 40
 #define PAL_DEEP_BUFFER_OUTPUT_PERIOD_DURATION 40
 #define PAL_PCM_OFFLOAD_OUTPUT_PERIOD_DURATION 80
 #define PAL_LOW_LATENCY_OUTPUT_PERIOD_DURATION 5
+#define PAL_VOIP_OUTPUT_PERIOD_DURATION 20
 
 #define PAL_GENERIC_PLAYBACK_PERIOD_COUNT 2
 #define PAL_DEEP_BUFFER_PLAYBACK_PERIOD_COUNT 2
 #define PAL_PCM_OFFLOAD_PLAYBACK_PERIOD_COUNT 2
 #define PAL_LOW_LATENCY_PLAYBACK_PERIOD_COUNT 2
+#define PAL_VOIP_PLAYBACK_PERIOD_COUNT 2
 
 #ifdef __cplusplus
 }  /* extern "C" */

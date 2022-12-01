@@ -106,7 +106,8 @@ class SoundTriggerEngineGsl : public SoundTriggerEngine {
     int32_t setECRef(
         Stream *s,
         std::shared_ptr<Device> dev,
-        bool is_enable) override;
+        bool is_enable,
+        bool setECForFirstTime = false) override;
     int32_t GetCustomDetectionEvent(uint8_t **event, size_t *size) override;
     int32_t GetDetectedConfScore() { return 0; }
     int32_t GetDetectionState() { return 0; }
@@ -114,6 +115,7 @@ class SoundTriggerEngineGsl : public SoundTriggerEngine {
         return detection_time_;
     }
     void UpdateState(eng_state_t state);
+    void UpdateStateToActive() override;
 
  private:
     int32_t StartBuffering(Stream *s);
@@ -194,7 +196,10 @@ class SoundTriggerEngineGsl : public SoundTriggerEngine {
     size_t mmap_buffer_size_;
     uint32_t mmap_write_position_;
     uint64_t kw_transfer_latency_;
+    int32_t ec_ref_count_;
     ChronoSteadyClock_t detection_time_;
     std::mutex state_mutex_;
+    std::mutex ec_ref_mutex_;
+    std::shared_ptr<Device> rx_ec_dev_;
 };
 #endif  // SOUNDTRIGGERENGINEGSL_H

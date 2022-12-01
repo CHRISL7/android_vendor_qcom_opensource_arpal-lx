@@ -62,6 +62,7 @@
  */
 
 #define LOG_TAG "PAL: Stream"
+#include <semaphore.h>
 #include "Stream.h"
 #include "StreamPCM.h"
 #include "StreamInCall.h"
@@ -302,7 +303,7 @@ int32_t  Stream::getStreamAttributes(struct pal_stream_attributes *sAttr)
 {
     int32_t status = 0;
 
-    if (!sAttr) {
+    if (!sAttr || !mStreamAttr) {
         status = -EINVAL;
         PAL_ERR(LOG_TAG, "Invalid stream attribute pointer, status %d", status);
         goto exit;
@@ -440,6 +441,9 @@ uint32_t Stream::getRenderLatency()
     case PAL_STREAM_ULTRA_LOW_LATENCY:
         delayMs = PAL_ULL_PLATFORM_DELAY / 1000;
         break;
+    case PAL_STREAM_VOIP_RX:
+        delayMs = PAL_VOIP_PLATFORM_DELAY / 1000;
+        break;
     default:
         break;
     }
@@ -474,6 +478,10 @@ uint32_t Stream::getLatency()
         latencyMs = PAL_PCM_OFFLOAD_OUTPUT_PERIOD_DURATION *
             PAL_PCM_OFFLOAD_PLAYBACK_PERIOD_COUNT;
         break;
+    case PAL_STREAM_VOIP_RX:
+        latencyMs = PAL_VOIP_OUTPUT_PERIOD_DURATION *
+            PAL_VOIP_PLAYBACK_PERIOD_COUNT;
+        break;
     default:
         break;
     }
@@ -494,17 +502,26 @@ int32_t Stream::getAssociatedDevices(std::vector <std::shared_ptr<Device>> &aDev
     return status;
 }
 
-int32_t Stream::updatePalDevice(struct pal_device *dattr, pal_device_id_t dev_id, bool replace)
+void Stream::clearOutPalDevices()
+{
+    std::vector <struct pal_device>::iterator dIter;
+
+    for (dIter = mPalDevice.begin(); dIter != mPalDevice.end();) {
+        if (!rm->isInputDevId((*dIter).id)) {
+            mPalDevice.erase(dIter);
+        } else {
+            dIter++;
+        }
+    }
+}
+
+int32_t Stream::updatePalDevice(struct pal_device *dattr, pal_device_id_t dev_id)
 {
     int32_t status = 0;
 
     PAL_DBG(LOG_TAG, "updatePalDevice from %d to %d", dev_id, dattr->id);
     for (int i = 0; i < mPalDevice.size(); i++) {
         if (dev_id == mPalDevice[i].id) {
-            if (!replace) {
-                PAL_DBG(LOG_TAG, "found existing dattr, don't replace");
-                return status;
-            }
             mPalDevice.erase(mPalDevice.begin() + i);
             break;
         }
@@ -935,6 +952,7 @@ int32_t Stream::handleBTDeviceNotReady(bool& a2dpSuspend)
                     // no active stream found on both speaker and handset, get the deafult
                     pal_device_info devInfo;
                     memset(&devInfo, 0, sizeof(pal_device_info));
+                    devInfo.priority = MIN_USECASE_PRIORITY;
                     status = rm->getDeviceConfig(&dattr, NULL);
                     if (!status) {
                         // get the default device info and update snd name
@@ -942,6 +960,7 @@ int32_t Stream::handleBTDeviceNotReady(bool& a2dpSuspend)
                                 dattr.custom_config.custom_key, &devInfo);
                         rm->updateSndName(dattr.id, devInfo.sndDevName);
                     }
+                    dev->setDeviceAttributes(dattr);
                 }
             }
 
@@ -1003,8 +1022,9 @@ int32_t Stream::disconnectStreamDevice_l(Stream* streamHandle, pal_device_id_t d
         if (dev_id == mDevices[i]->getSndDeviceId()) {
             PAL_DBG(LOG_TAG, "device %d name %s, going to stop",
                 mDevices[i]->getSndDeviceId(), mDevices[i]->getPALDeviceName().c_str());
-            if (currentState != STREAM_STOPPED)
+            if (currentState != STREAM_STOPPED && rm->isDeviceActive_l(mDevices[i], this)) {
                 rm->deregisterDevice(mDevices[i], this);
+            }
             rm->lockGraph();
             status = session->disconnectSessionDevice(streamHandle, mStreamAttr->type, mDevices[i]);
             if (0 != status) {
@@ -1129,8 +1149,9 @@ int32_t Stream::connectStreamDevice_l(Stream* streamHandle, struct pal_device *d
         goto dev_stop;
     }
     rm->unlockGraph();
-    if (currentState != STREAM_STOPPED)
+    if (currentState != STREAM_STOPPED && !rm->isDeviceActive_l(dev, this)) {
         rm->registerDevice(dev, this);
+    }
     goto exit;
 
 dev_stop:
@@ -1240,6 +1261,7 @@ int32_t Stream::switchDevice(Stream* streamHandle, uint32_t numDev, struct pal_d
     bool VoiceorVoip_call_active = false;
     bool has_out_device = false, has_in_device = false;
     std::vector <struct pal_device>::iterator dIter;
+    struct pal_volume_data *volume = NULL;
 
     rm->lockActiveStream();
     mStreamMutex.lock();
@@ -1373,6 +1395,7 @@ int32_t Stream::switchDevice(Stream* streamHandle, uint32_t numDev, struct pal_d
     /* created stream device connect and disconnect list */
     streamDevDisconnect.clear();
     StreamDevConnect.clear();
+    suspendedDevIds.clear();
 
     for (int i = 0; i < connectCount; i++) {
         std::vector <Stream *> activeStreams;
@@ -1600,8 +1623,27 @@ int32_t Stream::switchDevice(Stream* streamHandle, uint32_t numDev, struct pal_d
 done:
     mStreamMutex.lock();
     if (a2dpMuted && !isNewDeviceA2dp) {
-        mute_l(false);
+        volume = (struct pal_volume_data *)calloc(1, (sizeof(uint32_t) +
+                              (sizeof(struct pal_channel_vol_kv) * (0xFFFF))));
+        if (!volume) {
+            PAL_ERR(LOG_TAG, "pal_volume_data memory allocation failure");
+            mStreamMutex.unlock();
+            rm->unlockActiveStream();
+            return -ENOMEM;
+        }
+        status = streamHandle->getVolumeData(volume);
+        if (status) {
+            PAL_ERR(LOG_TAG, "getVolumeData failed %d", status);
+        }
         a2dpMuted = false;
+        status = streamHandle->setVolume(volume); //apply cached volume.
+        if (status) {
+            PAL_ERR(LOG_TAG, "setVolume failed %d", status);
+        }
+        mute_l(false);
+        if (volume) {
+            free(volume);
+        }
         suspendedDevIds.clear();
     }
     mStreamMutex.unlock();
@@ -1644,6 +1686,25 @@ bool Stream::checkStreamMatch(pal_device_id_t pal_device_id,
     return match;
 }
 
+int Stream::initStreamSmph()
+{
+    return sem_init(&mInUse, 0, 1);
+}
+
+int Stream::deinitStreamSmph()
+{
+    return sem_destroy(&mInUse);
+}
+
+int Stream::postStreamSmph()
+{
+    return sem_post(&mInUse);
+}
+
+int Stream::waitStreamSmph()
+{
+    return sem_wait(&mInUse);
+}
 
 void Stream::handleStreamException(struct pal_stream_attributes *attributes,
                                    pal_stream_callback cb, uint64_t cookie)
@@ -1660,5 +1721,13 @@ void Stream::handleStreamException(struct pal_stream_attributes *attributes,
          cb(NULL, PAL_STREAM_CBK_EVENT_ERROR, 0, 0, cookie);
 
     }
+}
+
+void Stream::setCachedState(stream_state_t state)
+{
+    mStreamMutex.lock();
+    cachedState = state;
+    PAL_DBG(LOG_TAG, "set cachedState to %d", cachedState);
+    mStreamMutex.unlock();
 }
 

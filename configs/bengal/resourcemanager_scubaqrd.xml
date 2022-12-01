@@ -1,54 +1,30 @@
 <?xml version="1.0" encoding="ISO-8859-1"?>
-<!-- Copyright (c) 2019-2021, The Linux Foundation. All rights reserved.
--->
-<!--
--->
-<!-- Redistribution and use in source and binary forms, with or without
--->
-<!-- modification, are permitted provided that the following conditions are
--->
-<!-- met:
--->
-<!--     * Redistributions of source code must retain the above copyright
--->
-<!--       notice, this list of conditions and the following disclaimer.
--->
-<!--     * Redistributions in binary form must reproduce the above
--->
-<!--       copyright notice, this list of conditions and the following
--->
-<!--       disclaimer in the documentation and/or other materials provided
--->
-<!--       with the distribution.
--->
-<!--     * Neither the name of The Linux Foundation nor the names of its
--->
-<!--       contributors may be used to endorse or promote products derived
--->
-<!--       from this software without specific prior written permission.
--->
-<!--
--->
-<!-- THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED
--->
-<!-- WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF
--->
-<!-- MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT
--->
-<!-- ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS
--->
-<!-- BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR
--->
-<!-- CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF
--->
-<!-- SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR
--->
-<!-- BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,
--->
-<!-- OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN
--->
-<!-- IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
--->
+<!--  Copyright (c) 2020, The Linux Foundation. All rights reserved.             -->
+<!--                                                                             -->
+<!--  Redistribution and use in source and binary forms, with or without         -->
+<!--  modification, are permitted provided that the following conditions are     -->
+<!--  met:                                                                       -->
+<!--      * Redistributions of source code must retain the above copyright       -->
+<!--        notice, this list of conditions and the following disclaimer.        -->
+<!--      * Redistributions in binary form must reproduce the above              -->
+<!--        copyright notice, this list of conditions and the following          -->
+<!--        disclaimer in the documentation and/or other materials provided      -->
+<!--        with the distribution.                                               -->
+<!--      * Neither the name of The Linux Foundation nor the names of its        -->
+<!--        contributors may be used to endorse or promote products derived      -->
+<!--        from this software without specific prior written permission.        -->
+<!--                                                                             -->
+<!--  THIS SOFTWARE IS PROVIDED "AS IS" AND ANY EXPRESS OR IMPLIED               -->
+<!--  WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED WARRANTIES OF       -->
+<!--  MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND NON-INFRINGEMENT     -->
+<!--  ARE DISCLAIMED.  IN NO EVENT SHALL THE COPYRIGHT OWNER OR CONTRIBUTORS     -->
+<!--  BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR     -->
+<!--  CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF       -->
+<!--  SUBSTITUTE GOODS OR SERVICES; LOSS OF USE, DATA, OR PROFITS; OR            -->
+<!--  BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY THEORY OF LIABILITY,      -->
+<!--  WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT (INCLUDING NEGLIGENCE       -->
+<!--  OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS SOFTWARE, EVEN     -->
+<!--  IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE                               -->
 
 <!-- Changes from Qualcomm Innovation Center are provided under the following license: -->
 <!--                                                                                   -->
@@ -57,27 +33,45 @@
 <resource_manager_info>
     <config_params>
         <param key="native_audio_mode" value="multiple_mix_dsp"/>
+        <!-- Uncomment HIFI Filter Headphones related sections when set this
+             hifi_filter key to true -->
+        <param key="hifi_filter" value="false"/>
         <param key="max_sessions" value="128"/>
+        <!-- Revisit, default is 2 -->
+        <param key="max_nonTunnel_sessions" value="4"/>  
         <param key="logging_level" value ="3" />
+        <param key="context_manager_enable" value ="false" />
+        <!-- Revisit later, used for PAL_STREAM_ULTRASOUND -->
+        <param key="upd_dedicated_be" value ="false" />
+        <param key="upd_duty_cycle_enable" value="false" />
+        <param key="dual_mono" value ="false" />
+        <param key="signal_handler" value ="true" />
+        <param key="device_mux_config" value ="false" />
     </config_params>
+    <config_volume>
+        <use_volume_set_param>0</use_volume_set_param>
+        <supported_streams>
+            <supported_stream>PAL_STREAM_ULTRA_LOW_LATENCY</supported_stream>
+            <supported_stream>PAL_STREAM_COMPRESSED</supported_stream>
+        </supported_streams>
+    </config_volume>
+    <config_lpm>
+        <use_disable_lpm>1</use_disable_lpm>
+        <lpm_supported_streams>
+            <lpm_supported_stream>PAL_STREAM_LOW_LATENCY</lpm_supported_stream>
+            <lpm_supported_stream>PAL_STREAM_ULTRA_LOW_LATENCY</lpm_supported_stream>
+        </lpm_supported_streams>
+    </config_lpm>
     <config_gapless key="gapless_supported" value="1"/>
     <bt_codecs>
-        <codec codec_format="CODEC_TYPE_AAC" codec_type="enc|dec"
-codec_library="lib_bt_bundle.so" />
-        <codec codec_format="CODEC_TYPE_SBC" codec_type="enc|dec"
-codec_library="lib_bt_bundle.so" />
-        <codec codec_format="CODEC_TYPE_LDAC" codec_type="enc"
-codec_library="lib_bt_bundle.so" />
-        <codec codec_format="CODEC_TYPE_APTX" codec_type="enc"
-codec_library="lib_bt_aptx.so" />
-        <codec codec_format="CODEC_TYPE_APTX_HD" codec_type="enc"
-codec_library="lib_bt_aptx.so" />
-        <codec codec_format="CODEC_TYPE_APTX_AD" codec_type="enc"
-codec_library="lib_bt_aptx.so" />
-        <codec codec_format="CODEC_TYPE_APTX_DUAL_MONO" codec_type="enc"
-codec_library="lib_bt_aptx.so" />
-        <codec codec_format="CODEC_TYPE_APTX_AD_SPEECH" codec_type="enc|dec"
-codec_library="lib_bt_aptx.so" />
+        <codec codec_format="CODEC_TYPE_AAC" codec_type="enc|dec" codec_library="lib_bt_bundle.so" />
+        <codec codec_format="CODEC_TYPE_SBC" codec_type="enc|dec" codec_library="lib_bt_bundle.so" />
+        <codec codec_format="CODEC_TYPE_LDAC" codec_type="enc" codec_library="lib_bt_bundle.so" />
+        <codec codec_format="CODEC_TYPE_APTX" codec_type="enc" codec_library="lib_bt_aptx.so" />
+        <codec codec_format="CODEC_TYPE_APTX_HD" codec_type="enc" codec_library="lib_bt_aptx.so" />
+        <codec codec_format="CODEC_TYPE_APTX_AD" codec_type="enc" codec_library="lib_bt_aptx.so" />
+        <codec codec_format="CODEC_TYPE_APTX_DUAL_MONO" codec_type="enc" codec_library="lib_bt_aptx.so" />
+        <codec codec_format="CODEC_TYPE_APTX_AD_SPEECH" codec_type="enc|dec" codec_library="lib_bt_aptx.so" />
     </bt_codecs>
     <gain_db_to_level_mapping>
         <gain_level_map db="-59" level="5"/>
@@ -88,6 +82,8 @@ codec_library="lib_bt_aptx.so" />
     </gain_db_to_level_mapping>
     <config_voice>
         <vsid>0xB3000000</vsid>
+        <loopbackDelay>1000</loopbackDelay>
+        <maxVolIndex>5</maxVolIndex>
         <mode_map>
             <modepair key="0x11C05000" value="0xB3000001"/>
             <modepair key="0x11DC5000" value="0xB3000001"/>
@@ -104,6 +100,7 @@ codec_library="lib_bt_aptx.so" />
             <samplerate>48000</samplerate>
             <bit_width>16</bit_width>
             <snd_device_name>handset-mic</snd_device_name>
+            <ec_enable>0</ec_enable>
             <usecase>
                 <name>PAL_STREAM_LOW_LATENCY</name>
                 <devicePP-metadata>

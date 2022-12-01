@@ -110,6 +110,8 @@ StreamCompress::StreamCompress(const struct pal_stream_attributes *sattr, struct
     mStreamAttr = (struct pal_stream_attributes *)calloc(1, sizeof(struct pal_stream_attributes));
     if (!mStreamAttr) {
         PAL_ERR(LOG_TAG, "malloc for stream attributes failed");
+        free(mVolumeData);
+        mVolumeData = nullptr;
         mStreamMutex.unlock();
         throw std::runtime_error("failed to malloc for stream attributes");
     }
@@ -120,6 +122,9 @@ StreamCompress::StreamCompress(const struct pal_stream_attributes *sattr, struct
     if (session == NULL){
        PAL_ERR(LOG_TAG,"session (compress) creation failed");
        free(mStreamAttr);
+       mStreamAttr = nullptr;
+       free(mVolumeData);
+       mVolumeData = nullptr;
        mStreamMutex.unlock();
        throw std::runtime_error("failed to create session object");
     }
@@ -131,6 +136,9 @@ StreamCompress::StreamCompress(const struct pal_stream_attributes *sattr, struct
         if (dev == nullptr) {
             PAL_ERR(LOG_TAG, "Device creation is failed");
             free(mStreamAttr);
+            mStreamAttr = nullptr;
+            free(mVolumeData);
+            mVolumeData = nullptr;
             mStreamMutex.unlock();
             throw std::runtime_error("failed to create device object");
         }
@@ -162,6 +170,16 @@ int32_t StreamCompress::open()
         PAL_ERR(LOG_TAG, "Sound card offline, can not open stream");
         usleep(SSR_RECOVERY);
         goto exit;
+    }
+
+    /* Check for BT device connected state */
+    for (int32_t i = 0; i < mDevices.size(); i++) {
+        pal_device_id_t dev_id = (pal_device_id_t) mDevices[i]->getSndDeviceId();
+        if (rm->isBtDevice(dev_id) && !(rm->isDeviceAvailable(dev_id))) {
+            PAL_ERR(LOG_TAG, "BT device %d not connected, cannot open stream", dev_id);
+            status = -ENODEV;
+            goto exit;
+        }
     }
 
     if (currentState == STREAM_IDLE) {
@@ -282,9 +300,9 @@ int32_t StreamCompress::stop()
         mStreamMutex.lock();
         currentState = STREAM_STOPPED;
         for (int i = 0; i < mDevices.size(); i++) {
-            rm->deregisterDevice(mDevices[i], this);
+            if (rm->isDeviceActive_l(mDevices[i], this))
+                rm->deregisterDevice(mDevices[i], this);
         }
-        isDevRegistered = false;
         rm->unlockActiveStream();
         switch (mStreamAttr->direction) {
         case PAL_AUDIO_OUTPUT:
@@ -523,7 +541,7 @@ int32_t StreamCompress::write(struct pal_buffer *buf)
                 return status;
             }
         }
-        if (!isDevRegistered && (currentState != STREAM_STARTED) &&
+        if ((currentState != STREAM_STARTED) &&
             !(currentState == STREAM_PAUSED && isPaused)) {
             currentState = STREAM_STARTED;
             // register device only after graph is actually started
@@ -531,9 +549,9 @@ int32_t StreamCompress::write(struct pal_buffer *buf)
             rm->lockActiveStream();
             mStreamMutex.lock();
             for (int i = 0; i < mDevices.size(); i++) {
-                rm->registerDevice(mDevices[i], this);
+                if (!rm->isDeviceActive_l(mDevices[i], this))
+                    rm->registerDevice(mDevices[i], this);
             }
-            isDevRegistered = true;
             rm->unlockActiveStream();
         }
     } else {
@@ -743,7 +761,9 @@ int32_t StreamCompress::pause_l()
     PAL_DBG(LOG_TAG,"Enter, session handle - %p, state %d",
                session, currentState);
 
-    if (currentState != STREAM_PAUSED) {
+    if ((currentState == STREAM_PAUSED) && isPaused) {
+        PAL_INFO(LOG_TAG, "Stream is already paused");
+    } else {
         status = session->setConfig(this, MODULE, PAUSE_TAG);
         if (0 != status) {
             PAL_ERR(LOG_TAG,"session setConfig for pause failed with status %d",status);
@@ -757,8 +777,6 @@ int32_t StreamCompress::pause_l()
         isPaused = true;
         currentState = STREAM_PAUSED;
         PAL_VERBOSE(LOG_TAG,"session pause successful, state %d", currentState);
-    } else {
-       PAL_INFO(LOG_TAG, "Stream is already paused");
     }
 
 exit:
@@ -840,9 +858,9 @@ int32_t StreamCompress::flush()
     rm->lockActiveStream();
     mStreamMutex.lock();
     for (int i = 0; i < mDevices.size(); i++) {
-        rm->deregisterDevice(mDevices[i], this);
+        if (rm->isDeviceActive_l(mDevices[i], this))
+            rm->deregisterDevice(mDevices[i], this);
     }
-    isDevRegistered = false;
     rm->unlockActiveStream();
     return session->flush();
 }

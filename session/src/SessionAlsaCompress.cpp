@@ -691,14 +691,13 @@ int SessionAlsaCompress::open(Stream * s)
     // Register for  mixer event callback
     status = rm->registerMixerEventCallback(compressDevIds, sessionCb, cbCookie,
                     true);
-    if (status != 0) {
+    if (status == 0) {
+        isMixerEventCbRegd = true;
+    } else {
         // Not a fatal error. Only pop noise will come for Soft pause use case
         PAL_ERR(LOG_TAG, "Failed to register callback to rm");
         status = 0;
-        isPauseRegistrationDone = false;
     }
-    else
-        isPauseRegistrationDone = true;
 
 exit:
     PAL_DBG(LOG_TAG, "Exit status: %d", status);
@@ -964,19 +963,45 @@ exit:
 int SessionAlsaCompress::setConfig(Stream * s, configType type, int tag)
 {
     int status = 0;
+    struct pal_stream_attributes sAttr;
     uint32_t tagsent;
     struct agm_tag_config* tagConfig;
     const char *setParamTagControl = "setParamTag";
     const char *stream = "COMPRESS";
     const char *setCalibrationControl = "setCalibration";
+    const char *setBEControl = "control";
     struct mixer_ctl *ctl;
     struct agm_cal_config *calConfig;
+    std::ostringstream beCntrlName;
     std::ostringstream tagCntrlName;
     std::ostringstream calCntrlName;
     int tkv_size = 0;
     int ckv_size = 0;
 
     PAL_DBG(LOG_TAG, "Enter");
+    status = s->getStreamAttributes(&sAttr);
+    if (0 != status) {
+        PAL_ERR(LOG_TAG, "getStreamAttributes Failed \n");
+        return -EINVAL;
+    }
+
+    if ((sAttr.direction == PAL_AUDIO_OUTPUT && rxAifBackEnds.empty()) ||
+        (sAttr.direction == PAL_AUDIO_INPUT && txAifBackEnds.empty())) {
+        PAL_ERR(LOG_TAG, "No backend connected to this stream\n");
+        return -EINVAL;
+    }
+
+    if (compressDevIds.size() > 0)
+        beCntrlName<<stream<<compressDevIds.at(0)<<" "<<setBEControl;
+
+    ctl = mixer_get_ctl_by_name(mixer, beCntrlName.str().data());
+    if (!ctl) {
+        PAL_ERR(LOG_TAG, "Invalid mixer control: %s\n", beCntrlName.str().data());
+        return -ENOENT;
+    }
+    mixer_ctl_set_enum_by_string(ctl, (sAttr.direction == PAL_AUDIO_OUTPUT) ?
+                                 rxAifBackEnds[0].second.data() : txAifBackEnds[0].second.data());
+
     switch (type) {
         case MODULE:
             tkv.clear();
@@ -1145,6 +1170,15 @@ int SessionAlsaCompress::start(Stream * s)
     if (!compress) {
         PAL_ERR(LOG_TAG, "compress open failed");
         status = -EINVAL;
+        {
+            // send the exit command to the waiting thread
+            auto msg = std::make_shared<offload_msg>(OFFLOAD_CMD_EXIT);
+            std::lock_guard<std::mutex> lock(cv_mutex_);
+            msg_queue_.push(msg);
+            cv_.notify_all();
+        }
+        worker_thread->join();
+        worker_thread.reset(NULL);
         goto exit;
     }
     if (!is_compress_ready(compress)) {
@@ -1203,7 +1237,7 @@ int SessionAlsaCompress::start(Stream * s)
                     }
                 }
 
-                if (!status && isPauseRegistrationDone) {
+                if (!status && isMixerEventCbRegd && !isPauseRegistrationDone) {
                     // Register for callback for Soft Pause
                     size_t payload_size = 0;
                     struct agm_event_reg_cfg event_cfg;
@@ -1215,10 +1249,12 @@ int SessionAlsaCompress::start(Stream * s)
                     status = SessionAlsaUtils::registerMixerEvent(mixer,
                                     compressDevIds.at(0), rxAifBackEnds[0].second.data(),
                                     TAG_PAUSE, (void *)&event_cfg, payload_size);
-                    if (status != 0) {
-                        PAL_DBG(LOG_TAG, "Unable to register callback for pause\n");
+                    if (status == 0) {
+                        isPauseRegistrationDone = true;
+                    } else {
+                        // Not a fatal error
+                        PAL_ERR(LOG_TAG, "Pause callback registration failed");
                         status = 0;
-                        isPauseRegistrationDone = false;
                     }
                 }
             }
@@ -1302,10 +1338,16 @@ int SessionAlsaCompress::stop(Stream * s __unused)
         event_cfg.event_id = EVENT_ID_SOFT_PAUSE_PAUSE_COMPLETE;
         event_cfg.event_config_payload_size = 0;
         event_cfg.is_register = 0;
-        SessionAlsaUtils::registerMixerEvent(mixer, compressDevIds.at(0),
+        status = SessionAlsaUtils::registerMixerEvent(mixer, compressDevIds.at(0),
                     rxAifBackEnds[0].second.data(), TAG_PAUSE, (void *)&event_cfg,
                     payload_size);
-        isPauseRegistrationDone = false;
+        if (status == 0) {
+            isPauseRegistrationDone = false;
+        } else {
+            // Not a fatal error
+            PAL_ERR(LOG_TAG, "Pause callback deregistration failed\n");
+            status = 0;
+        }
     }
 
     PAL_DBG(LOG_TAG, "Enter");
@@ -1321,64 +1363,79 @@ int SessionAlsaCompress::close(Stream * s)
 {
     struct pal_stream_attributes sAttr;
     int32_t status = 0;
-    std::ostringstream disconnectCtrlName;
+    std::string backendname;
+    std::vector<std::shared_ptr<Device>> associatedDevices;
+    std::vector<std::pair<std::string, int>> freeDeviceMetadata;
+    int32_t beDevId = 0;
 
     PAL_DBG(LOG_TAG, "Enter");
 
     s->getStreamAttributes(&sAttr);
-    if (!compress) {
-        if (compressDevIds.size() != 0)
-            rm->freeFrontEndIds(compressDevIds, sAttr, 0);
-        if (rm->cardState == CARD_STATUS_OFFLINE) {
-            if (sessionCb)
-                sessionCb(cbCookie, PAL_STREAM_CBK_EVENT_ERROR, NULL, 0);
+    status = s->getAssociatedDevices(associatedDevices);
+    if (status != 0) {
+        PAL_ERR(LOG_TAG, "getAssociatedDevices Failed\n");
+        goto exit;
+    }
+    freeDeviceMetadata.clear();
+
+    for (auto &dev : associatedDevices) {
+        beDevId = dev->getSndDeviceId();
+        rm->getBackendName(beDevId, backendname);
+        PAL_DBG(LOG_TAG, "backendname %s", backendname.c_str());
+        if (dev->getDeviceCount() > 1) {
+            PAL_DBG(LOG_TAG, "Rx dev still active\n");
+            freeDeviceMetadata.push_back(
+                std::make_pair(backendname, 0));
+        } else {
+            freeDeviceMetadata.push_back(
+                std::make_pair(backendname, 1));
+            PAL_DBG(LOG_TAG, "Rx dev not active");
         }
-        goto exit;
-        /** close unstarted session should return normal. */
     }
-    disconnectCtrlName << "COMPRESS" << compressDevIds.at(0) << " disconnect";
-    disconnectCtrl = mixer_get_ctl_by_name(mixer, disconnectCtrlName.str().data());
-    if (!disconnectCtrl) {
-        PAL_ERR(LOG_TAG, "invalid mixer control: %s", disconnectCtrlName.str().data());
-        status = -EINVAL;
-        goto exit;
+    status = SessionAlsaUtils::close(s, rm, compressDevIds,
+                                     rxAifBackEnds, freeDeviceMetadata);
+    if (status) {
+        PAL_ERR(LOG_TAG, "session alsa close failed with %d", status);
     }
-    /** Disconnect FE to BE */
-    mixer_ctl_set_enum_by_string(disconnectCtrl, rxAifBackEnds[0].second.data());
-    compress_close(compress);
-    compress = NULL;
+    if (compress) {
+        compress_close(compress);
+        if (rm->cardState == CARD_STATUS_OFFLINE) {
+            std::shared_ptr<offload_msg> msg = std::make_shared<offload_msg>(OFFLOAD_CMD_ERROR);
+            std::lock_guard<std::mutex> lock(cv_mutex_);
+            msg_queue_.push(msg);
+            cv_.notify_all();
+        }
+        {
+            std::shared_ptr<offload_msg> msg = std::make_shared<offload_msg>(OFFLOAD_CMD_EXIT);
+            std::lock_guard<std::mutex> lock(cv_mutex_);
+            msg_queue_.push(msg);
+            cv_.notify_all();
+        }
+
+        /* wait for handler to exit */
+        worker_thread->join();
+        worker_thread.reset(NULL);
+
+        /* empty the pending messages in queue */
+        while (!msg_queue_.empty())
+            msg_queue_.pop();
+    }
     PAL_DBG(LOG_TAG, "out of compress close");
 
     rm->freeFrontEndIds(compressDevIds, sAttr, 0);
     freeCustomPayload();
 
-    if (rm->cardState == CARD_STATUS_OFFLINE) {
-        std::shared_ptr<offload_msg> msg = std::make_shared<offload_msg>(OFFLOAD_CMD_ERROR);
-        std::lock_guard<std::mutex> lock(cv_mutex_);
-        msg_queue_.push(msg);
-        cv_.notify_all();
-    }
-    {
-        std::shared_ptr<offload_msg> msg = std::make_shared<offload_msg>(OFFLOAD_CMD_EXIT);
-        std::lock_guard<std::mutex> lock(cv_mutex_);
-        msg_queue_.push(msg);
-        cv_.notify_all();
-    }
-
-    /* wait for handler to exit */
-    worker_thread->join();
-    worker_thread.reset(NULL);
-
-    /* empty the pending messages in queue */
-    while (!msg_queue_.empty())
-        msg_queue_.pop();
-
     // Deregister for mixer event callback
-    status = rm->registerMixerEventCallback(compressDevIds, sessionCb, cbCookie,
-                    false);
-    if (status != 0) {
-        PAL_ERR(LOG_TAG, "Failed to deregister callback to rm");
-        status = 0;
+    if (isMixerEventCbRegd) {
+        status = rm->registerMixerEventCallback(compressDevIds, sessionCb, cbCookie,
+                        false);
+        if (status == 0) {
+            isMixerEventCbRegd = false;
+        } else {
+            // Not a fatal error
+            PAL_ERR(LOG_TAG, "Failed to deregister callback to rm");
+            status = 0;
+        }
     }
 
  exit:
